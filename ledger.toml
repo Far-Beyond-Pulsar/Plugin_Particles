@@ -1,0 +1,95 @@
+# The particles plugin's rows of the SceneDB closure ledger (Pulsar-Native#1035):
+# its classes, GPU schemas, buffers, pass crates and call sites. A plugin owns
+# the rows of what it ships (Pulsar-Native#1606); `cargo test -p scene_inventory`
+# in a Pulsar-Native checkout recomputes every fact column, checks the human
+# columns, and fails on a missing, stale or misplaced row. The columns are
+# described in Pulsar-Native's crates/core/scene_inventory/ledger.toml.
+
+# ── Exposed component classes ───────────────────────────────────
+
+[[class]]
+name = "ParticleEmitterComponent"
+category = "Rendering"
+world_registered = true
+own_gpu_columns = true
+owner = "particles_component::component"
+disposition = "render (#1059). Its derived CoronaEmitterSourceRow is written on every insert, write, removal and replay; the environment join gates it on the instance and its owner's visibility, places it at the owner and allocates its range of the Corona particle pool (sized by max_particles, clamped when the pool is full). Sprites are the Corona pass's built-in atlas cells"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/installed/tests/render_acceptance.rs (particle_emitters_reach_the_frame_from_one_pool); plugins/vendor/particles/tests/scene_rows.rs (particle_emitters_take_disjoint_ranges_of_the_particle_pool)"
+status = "verified"
+
+# ── GPU-bearing schemas ─────────────────────────────────────────
+
+[[schema]]
+type = "CoronaEmitterSourceRow"
+path = "particles_component::CoronaEmitterSourceRow"
+buffers = ["corona_emitter_sources"]
+clears_on_remove = true
+releases_var_len = false
+registered = true
+writer = "ParticleEmitterComponent's derived GPU registration (the pass row in the owner's space with its requested particles; zero while disabled), on every insert, write, removal and replay"
+owner = "particles_component"
+disposition = "keep: the environment join's corona_emitters input"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/installed/tests/render_acceptance.rs (particle_emitters_reach_the_frame_from_one_pool); plugins/vendor/particles/tests/scene_rows.rs (particle_emitters_take_disjoint_ranges_of_the_particle_pool)"
+status = "verified"
+
+[[schema]]
+type = "ParticleEmitterComponent"
+path = "particles_component::component::ParticleEmitterComponent"
+buffers = []
+clears_on_remove = true
+releases_var_len = false
+registered = false
+writer = "the authored value's SceneDB GPU dispatch is its derived CoronaEmitterSourceRow (environment_rows), on every insert, write, removal and replay; the generated companion uploads nothing"
+owner = "particles_component::component"
+disposition = "keep: the authored type's GPU row is CoronaEmitterSourceRow, the environment join's input"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/installed/tests/render_acceptance.rs (particle_emitters_reach_the_frame_from_one_pool); plugins/vendor/particles/tests/scene_rows.rs (particle_emitters_take_disjoint_ranges_of_the_particle_pool)"
+status = "verified"
+
+# ── GPU buffer keys ─────────────────────────────────────────────
+
+[[buffer]]
+key = "corona_emitters"
+producers = []
+consumers = ["helio-pass-corona"]
+owner = "helio-scene-derivations environment join (execution output, packed into MAX_CORONA_EMITTERS rows)"
+disposition = "keep: the join places each enabled ParticleEmitterComponent of a visible owner at the owner and gives it the next contiguous, aligned range of the Corona particle pool (a GPU prefix sum of max_particles, clamped to the pool) (#1059)"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/installed/tests/render_acceptance.rs (particle_emitters_reach_the_frame_from_one_pool); plugins/vendor/particles/tests/scene_rows.rs (particle_emitters_take_disjoint_ranges_of_the_particle_pool)"
+status = "verified"
+
+[[buffer]]
+key = "corona_emitter_sources"
+producers = ["CoronaEmitterSourceRow"]
+consumers = []
+owner = "helio_component::components::environment_rows"
+disposition = "keep: ParticleEmitterComponent in its owner's space, derived on every write; the environment join reads it into corona_emitters"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/installed/tests/render_acceptance.rs (particle_emitters_reach_the_frame_from_one_pool); plugins/vendor/particles/tests/scene_rows.rs (particle_emitters_take_disjoint_ranges_of_the_particle_pool)"
+status = "verified"
+
+# ── Render pass crates ──────────────────────────────────────────
+
+[[pass]]
+crate = "helio-pass-corona"
+in_default_graph = false
+reads = ["corona_emitters"]
+owner = "helio-presets (mapping); helio-pass-corona (algorithm)"
+disposition = "runs in the editor graph: authored ParticleEmitterComponents reach it through the environment join (corona_emitters, #1059). Emitters draw from one shared particle pool by their join-allocated ranges; the particle-wide passes dispatch indirectly over the used range (no CPU readback); a row whose emitter or range changes restarts its particles. Depth sort is off (no CPU-built sort steps for GPU-allocated ranges)"
+target_contract = "Phase 6; 03-gpu-reflection-and-rendering.md"
+test = "plugins/installed/tests/render_acceptance.rs (particle_emitters_reach_the_frame_from_one_pool); plugins/vendor/particles/tests/scene_rows.rs (particle_emitters_take_disjoint_ranges_of_the_particle_pool); plugins/installed/tests/render_acceptance.rs (every_pass_of_the_editor_graph_runs)"
+status = "verified"
+
+# ── Lifecycle call sites ────────────────────────────────────────
+
+[[site]]
+pattern = "change-cursor"
+file = "plugins/vendor/particles/component/src/lib.rs"
+count = 1
+owner = "plugins/vendor/particles/component/src/lib.rs"
+disposition = "keep: the kind's own, moved with it into its plugin (plugin-migration.md Phases B and C)"
+target_contract = "Phase C; plugin-migration.md"
+test = "none: no test names this row; the owning plugin's suites cover its behaviour"
+status = "unverified"
