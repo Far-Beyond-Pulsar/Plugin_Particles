@@ -16,7 +16,7 @@
 //! instance and its owner's visibility, places it at the owner and allocates
 //! its range of the pool on the GPU, clamped when the pool is full.
 
-use engine_class_derive::{engine_class, register_world_component};
+use engine_class_derive::{engine_class, world_component};
 use pulsar_reflection::Reflectable;
 use serde::{Deserialize, Serialize};
 
@@ -150,7 +150,7 @@ impl ParticleEmitterComponent {
     }
 }
 
-#[register_world_component]
+#[world_component]
 impl ParticleEmitterComponent {}
 
 #[cfg(test)]
