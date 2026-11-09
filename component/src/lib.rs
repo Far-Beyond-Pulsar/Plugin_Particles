@@ -7,17 +7,15 @@
 //!   SceneDB derives from the authored value; the plugin's join places it at
 //!   the owner and gives it its range of the shared particle pool
 //!   (`helio_pass_corona::scene_rows`).
-//! - The registrations of the plugin's Helio feature
-//!   (`helio_pass_corona::CoronaFeature`) and its scene rows with the engine.
+//! - What the engine runs for them: the plugin's Helio feature
+//!   ([`render_features`]: `helio_pass_corona::CoronaFeature`), its scene
+//!   rows ([`register_columns`], [`derivation`]) and whether live emitters
+//!   keep a realtime viewport drawing ([`watch_particles`],
+//!   [`particles_live`]).
 //!
-//! Everything registers through `inventory` once the crate is linked: hosts link it
-//! without naming it (a game built for a project links the runtime modules
-//! of the plugins its `Pulsar.toml` enables, the editor every installed
-//! plugin through `installed_plugins`; `pulsar_plugins`) and know no particle type.
-
-// The plugin's descriptor (`../pulsar-plugin.toml`): linking this crate
-// installs the plugin; a project enables it or not (`pulsar_plugins`).
-pulsar_plugins::installed!("../pulsar-plugin.toml");
+//! This crate registers nothing itself but its type's SceneDB attachments
+//! (GPU mirror and clear): the plugin's root crate (`particles_plugin`)
+//! submits the component class and every registration above, in one place.
 
 pub mod component;
 
@@ -93,11 +91,14 @@ pulsar_scenedb::pulsar_reflection::inventory::submit! {
     }
 }
 
-fn register_columns(store: &mut SceneGpuStore, device: &std::sync::Arc<wgpu::Device>) {
+/// Registers the emitters' source-row columns.
+pub fn register_columns(store: &mut SceneGpuStore, device: &std::sync::Arc<wgpu::Device>) {
     CoronaEmitterSourceRow::register_gpu_columns_growable(store, 16, device);
 }
 
-fn derivation(
+/// The emitters' scene rows: the plugin's join from source rows to the
+/// Corona pass's emitter rows, placed at their owners with their pool ranges.
+pub fn derivation(
     device: &wgpu::Device,
     keys: helio_scene_join::RowJoinKeys,
 ) -> Box<dyn helio_scene_join::SceneDerivation> {
@@ -108,17 +109,9 @@ fn derivation(
     ))
 }
 
-inventory::submit! {
-    engine_backend::scene::helio_bridge::SceneRowsRegistration {
-        origin: pulsar_plugins::origin!(),
-        register_columns,
-        derivation,
-    }
-}
-
 /// Particles move on their own: a realtime viewport keeps drawing while an
 /// enabled emitter is in the world.
-fn particles_live(world: &pulsar_scenedb::World) -> bool {
+pub fn particles_live(world: &pulsar_scenedb::World) -> bool {
     world
         .query::<&ParticleEmitterComponent>()
         .any(|(instance, emitter)| {
@@ -126,29 +119,14 @@ fn particles_live(world: &pulsar_scenedb::World) -> bool {
         })
 }
 
-fn watch_particles(world: &pulsar_scenedb::World) -> pulsar_scenedb::ChangeCursor {
+/// What [`particles_live`] reads: the emitters' changes.
+pub fn watch_particles(world: &pulsar_scenedb::World) -> pulsar_scenedb::ChangeCursor {
     world.open_change_cursor::<ParticleEmitterComponent>()
 }
 
-inventory::submit! {
-    engine_backend::subsystems::render::AnimatedContentRegistration {
-        origin: pulsar_plugins::origin!(),
-        watch: watch_particles,
-        animated: particles_live,
-    }
-}
-
 /// The particles' feature: Corona's simulation and its overlay drawer.
-fn render_features() -> helio_feature_api::FeatureSet {
+pub fn render_features() -> helio_feature_api::FeatureSet {
     helio_feature_api::FeatureSet::new().with(helio_pass_corona::CoronaFeature)
-}
-
-inventory::submit! {
-    engine_backend::subsystems::render::RenderFeatureRegistration {
-        origin: pulsar_plugins::origin!(),
-        features: render_features,
-        configure: |config| config,
-    }
 }
 
 #[cfg(test)]
@@ -181,16 +159,5 @@ mod tests {
             ..emitter
         });
         assert!(bytemuck::bytes_of(&row).iter().all(|byte| *byte == 0));
-    }
-
-    #[test]
-    fn registers_its_feature() {
-        let features =
-            engine_backend::subsystems::render::helio_renderer::render_features::plugin_features();
-        assert!(
-            features.ids().contains(&"helio.corona"),
-            "features: {:?}",
-            features.ids()
-        );
     }
 }

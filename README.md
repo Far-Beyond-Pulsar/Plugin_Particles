@@ -19,13 +19,22 @@ draw phases and api crates.
 
 | Crate | Path | What |
 |---|---|---|
-| `particles_component` | `component/` | Particles (pulsar.particles): the particle emitter component, its rows and the registrations of the plugin's Helio feature (Corona) |
-| `particles_plugin` | `editor/` | Particles (pulsar.particles): the editor plugin -- its metadata, over the plugin's component crate |
+| `particles_component` | `component/` | Particles (pulsar.particles): the particle emitter component, its rows and scene rows, and the plugin's Helio feature set (Corona) |
+| `particles_plugin` | `.` | Particles (`pulsar.particles`): the plugin's root crate, the one place it registers everything it contributes (runtime registrations always, the editor's with `editor`) |
 | `particles-examples` | `examples/` | The particles plugin's standalone hosts on Helio: the Corona particle demo |
 | `helio-pass-corona` | `feature/` | Helio render pass: GPU-native particle system (Corona) |
 
-- **Runtime module** (what a game built for a project links): `particles_component`.
-- **Editor module** (what the editor links in addition): `particles_plugin`.
+The root crate (`particles_plugin`, this directory's package) is the one place
+the plugin registers what it contributes: its component classes, every
+registration that names an origin (`pulsar_plugins::origin!()`) and the
+descriptor. The other crates hold the code and register nothing but their
+types' own attachments, so `src/runtime.rs` lists everything the plugin
+brings (its editor registers nothing yet). The plugin's
+integration tests (`tests/`) link the root, as a game does.
+
+- **Runtime module** (what a game built for a project links): `particles_plugin`.
+- **Editor module** (what the editor links in addition): `particles_plugin` with its
+  `editor` feature (no editor UI yet).
 - **Requires**: nothing. A project enables or disables the plugin in its
   `Pulsar.toml` (`[plugins]`); disabled, the kind is absent and the frame
   draws without it.
@@ -43,8 +52,8 @@ only inside a Pulsar-Native checkout:
 ```bash
 git clone --recursive https://github.com/Far-Beyond-Pulsar/Pulsar-Native
 cd Pulsar-Native
-cargo check -p particles_component -p particles_plugin -p particles-examples -p helio-pass-corona --tests
-cargo test -p particles_component -p helio-pass-corona
+cargo check -p particles_plugin -p particles_component --features particles_plugin/editor -p particles-examples -p helio-pass-corona --tests
+cargo test -p particles_plugin -p particles_component -p helio-pass-corona
 ```
 
 Suites that render real frames need a GPU; CI leaves them out by name
