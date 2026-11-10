@@ -27,7 +27,7 @@ inventory::submit! {
         origin: pulsar_plugins::origin!(),
         name: "particles.rows",
         register_columns: particles_component::register_columns,
-        derivation: particles_component::derivation,
+        derivation: Some(particles_component::derivation),
     }
 }
 
