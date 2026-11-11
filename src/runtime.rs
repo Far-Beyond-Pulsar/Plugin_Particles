@@ -2,44 +2,43 @@
 //! runtime contribution, grouped by the engine seam it plugs into.
 
 use engine_backend::scene::helio_bridge::SceneRowsRegistration;
+use engine_backend::scene::{ClassSpec, ComponentsBuilder};
 use engine_backend::subsystems::render::{AnimatedContentRegistration, RenderFeatureRegistration};
 use particles_component::ParticleEmitterComponent;
 
-// ── Component classes ───────────────────────────────────────────────────────
+/// Everything the plugin registers for a game (and the editor).
+pub(crate) fn build(p: &mut pulsar_plugins::PluginBuilder) {
+    // ── Component classes ───────────────────────────────────────────────────
 
-pulsar_world_registry::submit_world_component!(ParticleEmitterComponent);
+    p.components()
+        .class::<ParticleEmitterComponent>(ClassSpec::default());
 
-// ── Rendering ───────────────────────────────────────────────────────────────
+    // ── Rendering ───────────────────────────────────────────────────────────
 
-// Corona's simulation and its overlay drawer.
-inventory::submit! {
-    RenderFeatureRegistration {
-        origin: pulsar_plugins::origin!(),
+    // Corona's simulation and its overlay drawer.
+    p.add(RenderFeatureRegistration {
+        origin: p.origin(),
         features: particles_component::render_features,
         configure: |config| config,
-    }
-}
+    });
 
-// The emitters' source rows and the join that places them at their owners
-// with their ranges of the shared particle pool.
-inventory::submit! {
-    SceneRowsRegistration {
-        origin: pulsar_plugins::origin!(),
+    // The emitters' source rows and the join that places them at their owners
+    // with their ranges of the shared particle pool.
+    p.add(SceneRowsRegistration {
+        origin: p.origin(),
         name: "particles.rows",
         register_columns: particles_component::register_columns,
         derivation: Some(particles_component::derivation),
-    }
-}
+    });
 
-// Particles move on their own: a realtime viewport keeps drawing while an
-// enabled emitter is in the world.
-inventory::submit! {
-    AnimatedContentRegistration {
-        origin: pulsar_plugins::origin!(),
+    // Particles move on their own: a realtime viewport keeps drawing while an
+    // enabled emitter is in the world.
+    p.add(AnimatedContentRegistration {
+        origin: p.origin(),
         name: "particles.live_emitters",
         watch: particles_component::watch_particles,
         animated: particles_component::particles_live,
-    }
+    });
 }
 
 #[cfg(test)]

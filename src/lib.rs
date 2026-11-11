@@ -5,8 +5,8 @@
 //! feature: Corona's GPU simulation, its overlay drawer and the join that
 //! places emitters and hands out the shared particle pool),
 //! `particles_component` (the SceneDB emitter component and its row). None
-//! of them registers a contribution; this crate imports them and submits their
-//! registrations, so this file and the module below are the whole list of
+//! of them registers a contribution; this crate imports them and registers them through its
+//! [`build`], so this file and the module below are the whole list of
 //! what the plugin brings:
 //!
 //! - [`runtime`]: what a game links. The component class, the Helio feature,
@@ -16,7 +16,7 @@
 //!   edits an emitter through its reflected properties.
 //!
 //! Every registration names this crate as its origin
-//! (`pulsar_plugins::origin!()`), so the plugin gate skips all of them while
+//! (`p.origin()`), so the plugin gate skips all of them while
 //! a project disables the plugin, and the plugin catalog lists them under
 //! `pulsar.particles`. Other plugins never depend on this crate; hosts reach
 //! it through the installed set or a generated game, a game without the
@@ -24,7 +24,12 @@
 
 // The plugin's descriptor (`pulsar-plugin.toml`): linking this crate installs
 // the plugin; a project enables it or not (`pulsar_plugins`).
-pulsar_plugins::installed!("pulsar-plugin.toml");
+pulsar_plugins::installed!("pulsar-plugin.toml", build);
+
+/// Everything the plugin registers.
+pub fn build(p: &mut pulsar_plugins::PluginBuilder) {
+    runtime::build(p);
+}
 
 pub use particles_component;
 

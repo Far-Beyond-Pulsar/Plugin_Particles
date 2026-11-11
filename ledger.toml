@@ -63,7 +63,7 @@ status = "verified"
 [[buffer]]
 key = "corona_emitter_sources"
 producers = ["CoronaEmitterSourceRow"]
-consumers = []
+consumers = ["particles_component"]
 owner = "helio_component::components::environment_rows"
 disposition = "keep: ParticleEmitterComponent in its owner's space, derived on every write; the environment join reads it into corona_emitters"
 target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
