@@ -6,7 +6,13 @@ id = "pulsar.particles"
 name = "Particles"
 description = "GPU particle emitters: their component, rows and the renderer feature that simulates and draws them (Corona)"
 enabled_by_default = true
-requires = []
+provides = [
+  { id = "pulsar.particles.rows", kind = "buffer", members = ["corona_emitters"] },
+]
+# Optional: coronas run without the meshes' api.
+requires = [
+  { id = "pulsar.meshes.api", optional = true },
+]
 
 # The plugin's root crate (the package in this directory): the one place it
 # registers everything it contributes. A game links it without its `editor`
