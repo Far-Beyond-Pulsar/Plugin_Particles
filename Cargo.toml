@@ -34,6 +34,9 @@ wgpu = { workspace = true }
 bytemuck = { workspace = true }
 glam = { workspace = true }
 pollster = "=0.4.0"
+# The render graph node tests (`tests/graph_node.rs`).
+helio-graph-asset = { workspace = true }
+helio-presets = { workspace = true }
 
 [lints]
 workspace = true

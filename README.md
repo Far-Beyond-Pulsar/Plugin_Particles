@@ -42,6 +42,14 @@ integration tests (`tests/`) link the root, as a game does.
 - **Its standalone hosts also compose**: `helio-pass-gi` (gi); `helio-light-api, helio-light-host` (lights); `helio-mats` (materials); `helio-mesh-api, helio-mesh-host, helio-pass-forward-lit` (meshes); `helio-pass-sky` (sky) (demos and GPU tests
   draw a whole scene; the plugin itself does not depend on these).
 
+## Render graph nodes
+
+Every pass the plugin's feature adds to the default pipeline is a node of `.rendergraph` assets, registered from its feature (`registrar.node`, so only while the plugin is enabled) with generated pins, an `Enabled` parameter and the default placement below. A graph naming one while `pulsar.particles` is disabled fails validation with the plugin named. Test: `tests/graph_node.rs`; see Pulsar-Native's `.agents/RENDER_GRAPH.md` ("Plugin nodes").
+
+| Node kind | Title | Default placement |
+|---|---|---|
+| `helio.pass.corona` | Overlay: Light Coronas | Overlay phase drawer, order 10 |
+
 ## Building and testing
 
 Like [Plugin_Physics](https://github.com/Far-Beyond-Pulsar/Plugin_Physics), this plugin's crates are members
