@@ -18,10 +18,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
-use helio::{
-    required_experimental_features, required_wgpu_features, required_wgpu_limits, Camera, Renderer,
-    RendererBuilder, RendererConfig,
-};
+use helio::{Camera, Renderer, RendererBuilder, RendererConfig};
 use helio_light_api::{GpuLight, LightType};
 use winit::{
     application::ApplicationHandler,
@@ -48,7 +45,6 @@ struct AppState {
     surface: wgpu::Surface<'static>,
     capture: common::SurfaceCapture,
     device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
     surface_format: wgpu::TextureFormat,
     renderer: Renderer,
     last_frame: std::time::Instant,
@@ -273,7 +269,6 @@ impl ApplicationHandler for App {
             surface,
             capture: common::SurfaceCapture::from_env(),
             device,
-            queue,
             surface_format,
             renderer,
             last_frame: std::time::Instant::now(),
