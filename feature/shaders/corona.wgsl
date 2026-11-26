@@ -24,6 +24,8 @@ const WG:          u32 = 256u;
 // emitter's row plus `TAG_EMITTERS` times that row's epoch (mod `TAG_EPOCHS`).
 // `TAG_EMITTERS` is `CORONA_MAX_EMITTERS`.
 const TAG_EMITTERS: u32 = 64u;
+// Emitter slots: as many as there are rows.
+const SLOTS: u32 = 64u;
 const TAG_EPOCHS:   u32 = 16384u;
 
 // ── Structs ───────────────────────────────────────────────────────────────────
@@ -74,14 +76,16 @@ struct EmitterDef {
 struct EmitterState {
     cursor:   u32,
     identity: u32,
-    // The range last frame: a change restarts the row's particles.
+    // The slot's range of the pool, kept while its size stays the same.
     offset:   u32,
     count:    u32,
     // Bumped on every restart; a particle of another epoch is dead.
     epoch:    u32,
-    _pad0:    u32,
-    _pad1:    u32,
-    _pad2:    u32,
+    // Part of a particle owed by the emission rate.
+    spawn_fraction: f32,
+    // The burst total (row word `_pad[0]`) already spawned.
+    burst_seen:     u32,
+    _pad0:          u32,
 }
 
 struct DrawArgs {
@@ -96,7 +100,10 @@ struct DrawArgs {
 
 @group(0) @binding(0)  var<uniform>             uniforms:          GpuCoronaUniforms;
 @group(0) @binding(1)  var<storage, read_write>  particles:         array<Particle>;
-@group(0) @binding(2)  var<storage, read_write>  emitters:          array<EmitterDef>;
+// The join's packed rows; only `cs_layout` reads them.
+@group(0) @binding(2)  var<storage, read_write>  rows:              array<EmitterDef>;
+// The slot table `cs_layout` fills, which every later pass reads.
+@group(0) @binding(14) var<storage, read_write>  emitters:          array<EmitterDef, 64>;
 @group(0) @binding(3)  var<storage, read_write>  compact_buf:       array<u32>;
 // Non-atomic now; written by cs_scan_blocks, read by cs_build_multi.
 @group(0) @binding(4)  var<storage, read_write>  emitter_alive:     array<u32>;
@@ -108,7 +115,7 @@ struct DrawArgs {
 @group(0) @binding(8)  var<storage, read_write>  block_sums_buf:    array<u32>;
 // view-space depth key per compact_buf slot; reset to -F32_MAX, then written by cs_scatter
 @group(0) @binding(9)  var<storage, read_write>  sort_key_buf:      array<f32>;
-// Per-emitter-row spawn cursor and restart state -- purely transient,
+// Per-slot spawn cursor and restart state -- purely transient,
 // pass-owned GPU state, deliberately NOT part of `EmitterDef`/`emitters`
 // (see the Rust side's `spawn_cursor_buf` doc for why: those rows are
 // re-written whenever their source changes, which would stomp an in-place
@@ -147,7 +154,7 @@ fn rng_range(seed: u32, lo: f32, hi: f32) -> f32 { return lo + rng_f32(seed) * (
 /// starts past the pool, is empty, and one that runs past the pool's end is
 /// clamped to it.
 fn emitter_range(e: u32) -> vec2<u32> {
-    if e >= uniforms.emitter_count { return vec2<u32>(0u, 0u); }
+    if e >= SLOTS { return vec2<u32>(0u, 0u); }
     let offset = emitters[e].particle_offset;
     if offset % WG != 0u || offset >= uniforms.total_particles { return vec2<u32>(offset, 0u); }
     return vec2<u32>(offset, min(emitters[e].particle_count, uniforms.total_particles - offset));
@@ -160,7 +167,7 @@ fn particle_tag(e: u32) -> f32 {
 
 /// The emitter particle `idx` was spawned by (its tag), if that row has not
 /// restarted since and its range still holds `idx`;
-/// `uniforms.emitter_count` otherwise (its emitter was removed or replaced,
+/// `SLOTS` otherwise (its emitter was removed or replaced,
 /// or the ranges were re-allocated).
 fn owner_of(idx: u32, p: Particle) -> u32 {
     let tag = u32(max(p.velocity.w, 0.0) + 0.5);
@@ -168,33 +175,116 @@ fn owner_of(idx: u32, p: Particle) -> u32 {
     let range = emitter_range(e);
     if range.y == 0u || idx < range.x || idx >= range.x + range.y
         || tag / TAG_EMITTERS != emitter_state[e].epoch % TAG_EPOCHS {
-        return uniforms.emitter_count;
+        return SLOTS;
     }
     return e;
 }
 
 // ── cs_layout ─────────────────────────────────────────────────────────────────
-// A row whose emitter (its identity) or range changed restarts: its epoch
-// moves on, so the particles it had die in `cs_simulate`, and its cursor
-// starts over. The particle-wide passes cover only the pool's used range:
-// its end is the furthest emitter range's end, computed here every frame
-// (no CPU readback), and their dispatch is indirect from `pool_layout`.
+// The join packs the live emitters' rows, so a row's place moves when another
+// emitter comes or goes. This pass keeps a slot per emitter identity, with its
+// own range of the pool, and copies each row into its slot; everything after
+// it reads the slot table. An emitter keeps its slot and range until its range
+// size changes. One that is gone (removed, hidden or disabled) frees its slot
+// at once and its particles die, without touching any other slot. (To let
+// particles live out their lives, an emitter stops spawning instead.)
+// The particle-wide passes cover only the pool's used range: its end is the
+// furthest slot's end, computed here every frame (no CPU readback), and their
+// dispatch is indirect from `pool_layout`.
+
+fn aligned(count: u32) -> u32 {
+    return ((count + WG - 1u) / WG) * WG;
+}
+
+fn release(s: u32) {
+    emitter_state[s].identity = 0u;
+    emitter_state[s].offset = 0u;
+    emitter_state[s].count = 0u;
+    emitter_state[s].epoch += 1u;
+    emitters[s].particle_offset = 0u;
+    emitters[s].particle_count = 0u;
+    emitters[s].extras.w = 0.0;
+}
+
+/// The first offset where `count` particles overlap no slot's range.
+fn free_offset(count: u32) -> u32 {
+    var offset = 0u;
+    // Each move passes the end of a range, so it settles within a slot count.
+    for (var round = 0u; round <= SLOTS; round++) {
+        var moved = false;
+        for (var s = 0u; s < SLOTS; s++) {
+            let state = emitter_state[s];
+            if state.identity == 0u { continue; }
+            let end = state.offset + aligned(state.count);
+            if offset < end && state.offset < offset + aligned(count) {
+                offset = end;
+                moved = true;
+            }
+        }
+        if !moved { break; }
+    }
+    return offset;
+}
 
 @compute @workgroup_size(1)
 fn cs_layout() {
-    var end = 0u;
-    for (var e = 0u; e < uniforms.emitter_count; e++) {
-        let range = emitter_range(e);
-        let identity = emitters[e].spawn_cursor;
-        var state = emitter_state[e];
-        if state.identity != identity || state.offset != range.x || state.count != range.y {
-            state.identity = identity;
-            state.offset = range.x;
-            state.count = range.y;
-            state.cursor = 0u;
-            state.epoch += 1u;
-            emitter_state[e] = state;
+    var seen: array<bool, 64>;
+    var placed: array<bool, 64>;
+    let live = min(uniforms.emitter_count, SLOTS);
+
+    // Rows that keep their slot.
+    for (var e = 0u; e < live; e++) {
+        let identity = rows[e].spawn_cursor;
+        let count = rows[e].particle_count;
+        if identity == 0u || count == 0u { continue; }
+        for (var s = 0u; s < SLOTS; s++) {
+            if emitter_state[s].identity != identity || emitter_state[s].count != count { continue; }
+            var def = rows[e];
+            def.particle_offset = emitter_state[s].offset;
+            emitters[s] = def;
+            seen[s] = true;
+            placed[e] = true;
+            break;
         }
+    }
+
+    // Slots whose emitter is gone, or asks for another range size, are free.
+    for (var s = 0u; s < SLOTS; s++) {
+        if emitter_state[s].identity != 0u && !seen[s] {
+            release(s);
+        }
+    }
+
+    // New emitters take a free slot and a free range.
+    for (var e = 0u; e < live; e++) {
+        let identity = rows[e].spawn_cursor;
+        let count = rows[e].particle_count;
+        if placed[e] || identity == 0u || count == 0u { continue; }
+        var slot = SLOTS;
+        for (var s = 0u; s < SLOTS; s++) {
+            if emitter_state[s].identity == 0u {
+                slot = s;
+                break;
+            }
+        }
+        if slot == SLOTS { continue; }
+        let offset = free_offset(count);
+        if offset >= uniforms.total_particles { continue; }
+        var def = rows[e];
+        def.particle_offset = offset;
+        emitters[slot] = def;
+        emitter_state[slot].identity = identity;
+        emitter_state[slot].offset = offset;
+        emitter_state[slot].count = count;
+        emitter_state[slot].cursor = 0u;
+        emitter_state[slot].spawn_fraction = 0.0;
+        emitter_state[slot].burst_seen = 0u;
+        emitter_state[slot].epoch += 1u;
+    }
+
+    var end = 0u;
+    for (var s = 0u; s < SLOTS; s++) {
+        let range = emitter_range(s);
         if range.y > 0u {
             end = max(end, range.x + range.y);
         }
@@ -215,7 +305,7 @@ fn cs_simulate(@builtin(global_invocation_id) id: vec3<u32>) {
     // A particle whose emitter no longer owns its slot dies.
     let e = owner_of(idx, p);
     p.size_lifetime_age.w += uniforms.delta_time;
-    if e >= uniforms.emitter_count || p.size_lifetime_age.w >= p.size_lifetime_age.z {
+    if e >= SLOTS || p.size_lifetime_age.w >= p.size_lifetime_age.z {
         p.pos_and_alive.w = 0.0;
         particles[idx] = p;
         return;
@@ -250,16 +340,26 @@ fn cs_simulate(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(1)
 fn cs_emit(@builtin(workgroup_id) id: vec3<u32>) {
     let eidx = id.x;
-    if eidx >= uniforms.emitter_count { return; }
+    if eidx >= SLOTS { return; }
 
     let em = emitters[eidx];
-    if em.extras.w < 0.5 { return; }
-
-    let count = u32(em.emit_params.x * uniforms.delta_time);
-    if count == 0u { return; }
-
     let pool_range = emitter_range(eidx);
     if pool_range.y == 0u { return; }
+
+    // The rate's whole particles now, its fraction carried on, so a slow
+    // emitter spawns at its rate at any frame rate.
+    var owed = emitter_state[eidx].spawn_fraction;
+    if em.extras.w >= 0.5 {
+        owed += em.emit_params.x * uniforms.delta_time;
+    }
+    let steady = u32(owed);
+    emitter_state[eidx].spawn_fraction = owed - f32(steady);
+    // Bursts asked for since the last frame, whether or not it emits.
+    let asked = bitcast<u32>(em._pad[0]);
+    let burst = asked - emitter_state[eidx].burst_seen;
+    emitter_state[eidx].burst_seen = asked;
+    let count = min(steady + min(burst, pool_range.y), pool_range.y);
+    if count == 0u { return; }
     let base   = pool_range.x;
     let range  = pool_range.y;
     let origin = em.transform[3].xyz;
@@ -278,13 +378,16 @@ fn cs_emit(@builtin(workgroup_id) id: vec3<u32>) {
 
         var spawn_pos: vec3<f32>;
         if etype >= 1u {
-            let theta = rng_f32(s + 1u) * 2.0 * PI;
-            let phi   = rng_f32(s + 3u) * PI;
-            let r     = rng_f32(s + 5u) * radius;
+            // Uniform in the ball: the cube root spreads the radius by
+            // volume, and an even `cos(phi)` keeps the poles from filling up.
+            let theta   = rng_f32(s + 1u) * 2.0 * PI;
+            let cos_phi = rng_range(s + 3u, -1.0, 1.0);
+            let sin_phi = sqrt(max(1.0 - cos_phi * cos_phi, 0.0));
+            let r       = pow(rng_f32(s + 5u), 1.0 / 3.0) * radius;
             spawn_pos = origin + vec3<f32>(
-                r * sin(phi) * cos(theta),
-                r * cos(phi),
-                r * sin(phi) * sin(theta),
+                r * sin_phi * cos(theta),
+                r * cos_phi,
+                r * sin_phi * sin(theta),
             );
         } else {
             spawn_pos = origin;
@@ -369,7 +472,7 @@ fn cs_scan_local(
 @compute @workgroup_size(1)
 fn cs_scan_blocks(@builtin(workgroup_id) wid: vec3<u32>) {
     let eidx = wid.x;
-    if eidx >= uniforms.emitter_count { return; }
+    if eidx >= SLOTS { return; }
 
     let range    = emitter_range(eidx);
     let block_lo = range.x / WG;
@@ -403,7 +506,7 @@ fn cs_scatter(
     if p.pos_and_alive.w < 0.5 { return; }
 
     let e = owner_of(idx, p);
-    if e >= uniforms.emitter_count { return; }
+    if e >= SLOTS { return; }
     // Position within this emitter's compact sub-range:
     //   block_sums_buf[wid.x] = alive count in emitter blocks before this one.
     //   prefix_buf[idx]       = alive count before idx in this block.
@@ -423,7 +526,7 @@ fn cs_scatter(
 @compute @workgroup_size(1)
 fn cs_build_multi(@builtin(workgroup_id) wid: vec3<u32>) {
     let eidx = wid.x;
-    if eidx >= uniforms.emitter_count { return; }
+    if eidx >= SLOTS { return; }
     let alive = emitter_alive[eidx];
     draw_args_staging[eidx].vertex_count   = 6u;
     draw_args_staging[eidx].instance_count = alive;

@@ -46,6 +46,10 @@ impl Default for ParticleEmitterShape {
 pub struct ParticleEmitterComponent {
     #[property(category = "Particles")]
     pub enabled: bool,
+    /// Whether it spawns at its rate. Off, it spawns only bursts; the
+    /// particles it has live out their lives.
+    #[property(category = "Particles")]
+    pub emitting: bool,
     /// Most particles alive at once: the emitter's share of the shared
     /// particle pool.
     #[property(min = 1.0, max = 262144.0, step = 1.0, category = "Particles")]
@@ -86,12 +90,18 @@ pub struct ParticleEmitterComponent {
     /// The built-in atlas cell (0-15).
     #[property(min = 0.0, max = 15.0, step = 1.0, category = "Appearance")]
     pub sprite: u32,
+    /// Every particle bursts have asked for since the component was made
+    /// (wrapping). The pass spawns the ones it has not yet, so several bursts
+    /// in one frame add up. Runtime state, not authored.
+    #[serde(skip)]
+    pub burst_total: u32,
 }
 
 impl Default for ParticleEmitterComponent {
     fn default() -> Self {
         Self {
             enabled: true,
+            emitting: true,
             max_particles: 1024,
             emit_rate: 100.0,
             lifetime: 2.0,
@@ -106,6 +116,7 @@ impl Default for ParticleEmitterComponent {
             start_color: [1.0, 1.0, 1.0, 1.0],
             end_color: [1.0, 1.0, 1.0, 0.0],
             sprite: 0,
+            burst_total: 0,
         }
     }
 }
@@ -146,7 +157,42 @@ impl ParticleEmitterComponent {
         }
         .to_gpu();
         row.transform = [[0.0; 4]; 4];
+        row.extras[3] = if self.emitting { 1.0 } else { 0.0 };
+        // The pass reads the running burst total from the first spare word.
+        row._pad[0] = f32::from_bits(self.burst_total);
         row
+    }
+}
+
+#[pulsar_scenedb::component_methods]
+impl ParticleEmitterComponent {
+    /// Spawn `count` particles at once, as well as any the rate spawns.
+    #[world_method(category = "Particles")]
+    fn burst(
+        world: &mut pulsar_scenedb::World,
+        entity: pulsar_scenedb::Entity,
+        count: i64,
+    ) -> Result<(), String> {
+        let count = u32::try_from(count).map_err(|_| "burst count must not be negative")?;
+        let mut emitter = world
+            .get_mut::<ParticleEmitterComponent>(entity)
+            .ok_or("ParticleEmitterComponent is missing")?;
+        emitter.burst_total = emitter.burst_total.wrapping_add(count);
+        Ok(())
+    }
+
+    /// Start or stop spawning at the emission rate.
+    #[world_method(category = "Particles")]
+    fn set_spawning(
+        world: &mut pulsar_scenedb::World,
+        entity: pulsar_scenedb::Entity,
+        spawning: bool,
+    ) -> Result<(), String> {
+        world
+            .get_mut::<ParticleEmitterComponent>(entity)
+            .ok_or("ParticleEmitterComponent is missing")?
+            .emitting = spawning;
+        Ok(())
     }
 }
 

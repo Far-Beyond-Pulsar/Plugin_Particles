@@ -126,6 +126,9 @@ pub struct CoronaPass {
     /// pass-owned GPU state, deliberately separate from the emitter rows.
     /// See its creation site in `new()` for why.
     spawn_cursor_buf: wgpu::Buffer,
+    /// The emitter slot table `cs_layout` fills from the join's rows: what
+    /// every later pass, and the drawer, reads.
+    slot_buf: wgpu::Buffer,
     compact_buf: wgpu::Buffer,
     emitter_alive_buf: wgpu::Buffer, // non-atomic u32 per emitter
     draw_args_staging: wgpu::Buffer, // STORAGE | COPY_SRC
@@ -305,6 +308,13 @@ impl CoronaPass {
             0,
             bytemuck::cast_slice(&vec![0u32; MAX_EMITTERS as usize * 8]),
         );
+
+        let slot_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Corona Emitter Slots"),
+            size: MAX_EMITTERS as u64 * emitter_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let emitter_alive_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Corona Emitter Alive"),
@@ -501,13 +511,14 @@ impl CoronaPass {
             &particle_sampler,
             &spawn_cursor_buf,
             &pool_layout_buf,
+            &slot_buf,
         ));
         let render_bg = Some(Self::build_bg(
             device,
             &render_bgl,
             &uniform_buf,
             &particle_buf,
-            &emitter_buf,
+            &slot_buf,
             &compact_buf,
             &emitter_alive_buf,
             &draw_args_staging,
@@ -519,6 +530,7 @@ impl CoronaPass {
             &particle_sampler,
             &spawn_cursor_buf,
             &pool_layout_buf,
+            &emitter_buf,
         ));
 
         let max_sort_steps = initial_sort_cap;
@@ -549,6 +561,7 @@ impl CoronaPass {
             block_sums_buf,
             sort_key_buf,
             sort_steps_buf,
+            slot_buf,
             pool_layout_buf,
             pool_dispatch_buf,
             _particle_tex: particle_tex,
@@ -650,6 +663,7 @@ impl CoronaPass {
                 // here too only so `build_bg` has one uniform entry list for
                 // both layouts.
                 Self::storage_entry(12, SS::COMPUTE, false),
+                Self::storage_entry(14, SS::COMPUTE, false),
                 // The pool layout (`pool_layout_buf`): compute only, like 12.
                 Self::storage_entry(13, SS::COMPUTE, false),
             ],
@@ -676,6 +690,7 @@ impl CoronaPass {
         sampler: &wgpu::Sampler,
         spawn_cursors: &wgpu::Buffer,
         pool_layout: &wgpu::Buffer,
+        slots: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Corona BG"),
@@ -736,6 +751,10 @@ impl CoronaPass {
                 wgpu::BindGroupEntry {
                     binding: 13,
                     resource: pool_layout.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: slots.as_entire_binding(),
                 },
             ],
         })
@@ -944,6 +963,11 @@ impl RenderPass for CoronaPass {
                 0,
                 bytemuck::cast_slice(&vec![0u32; MAX_EMITTERS as usize * 8]),
             );
+            ctx.write_buffer(
+                &self.slot_buf,
+                0,
+                &vec![0u8; MAX_EMITTERS as usize * std::mem::size_of::<crate::GpuCoronaEmitter>()],
+            );
         }
 
         let origin = ctx.world_origin;
@@ -1053,13 +1077,14 @@ impl RenderPass for CoronaPass {
                 &self.particle_sampler,
                 &self.spawn_cursor_buf,
                 &self.pool_layout_buf,
+                &self.slot_buf,
             ));
             self.render_bg = Some(Self::build_bg(
                 ctx.device,
                 &self.render_bgl,
                 &self.uniform_buf,
                 &self.particle_buf,
-                emitter_buf,
+                &self.slot_buf,
                 &self.compact_buf,
                 &self.emitter_alive_buf,
                 &self.draw_args_staging,
@@ -1071,13 +1096,16 @@ impl RenderPass for CoronaPass {
                 &self.particle_sampler,
                 &self.spawn_cursor_buf,
                 &self.pool_layout_buf,
+                emitter_buf,
             ));
             self.bg_key = Some(key);
         }
 
         let compute_bg = self.compute_bg.as_ref().unwrap();
         let render_bg = self.render_bg.as_ref().unwrap();
-        let ec = self.emitter_count;
+        // The per-emitter passes and draws cover every slot: a gone emitter's
+        // slot still holds the particles it left.
+        let ec = MAX_EMITTERS;
 
         let mut cmds = ctx.compute_cmds();
 
